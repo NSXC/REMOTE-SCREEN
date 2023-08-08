@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+<head>
+</head>
+<body>
+<center>
+  <div id="fpsCounter" style="position: absolute; top: 13px; left: 170px; color: white; background-color: rgba(0, 0, 0, 0.5); padding: 5px; border-radius: 10px; font-family: 'Roboto', sans-serif;"></div>
+  <div id="gameid" style="position: absolute; top: 13px; left: 230px; color: white; background-color: rgba(0, 0, 0, 0.5); padding: 5px; border-radius: 10px; font-family: 'Roboto', sans-serif;"></div>
+  <div id="status" style="position: absolute; top: 13px; left: 45px; color: rgba(25, 247, 117, 0.5); background-color: rgba(0, 0, 0, 0.5); padding: 5px; border-radius: 10px; font-family: 'Roboto', sans-serif;"></div>
+</center>
+  <style>
+    html {
+      background-color: black;
+    }
+  </style>
+
+  <img id="screenshotImage1" src="DEFSCREEN" alt="Player 1 Screenshot" style="width: 300px; height: 200px;">
+  <img id="screenshotImage2" src="DEFSCREEN" alt="Player 2 Screenshot" style="width: 300px; height: 200px; margin-top: 210px;">
+
+  <script>
+    const websocketURL = 'ws://localhost:8080';
+
+    const screenshotImage1 = document.getElementById('screenshotImage1');
+    const screenshotImage2 = document.getElementById('screenshotImage2');
+    const websocket = new WebSocket(websocketURL);
+    let lastFrameTime = Date.now();
+    let lastSentTime = Date.now();
+    let fps = 0;
+    let staticImageTimer;
+    let connectionLostTimer;
+    let playerID = 1; 
+
+    websocket.onopen = () => {
+      console.log('WebSocket connection opened.');
+    };
+
+    function displayImage(jsonData) {
+      clearTimeout(staticImageTimer);
+      const data = JSON.parse(jsonData);
+      const gamid = data.gamid;
+      const cleanedBase64Data = data.gameimage.replace(/"/g, '');
+      const imageUrl = `data:image/jpeg;base64,${cleanedBase64Data}`;
+      if (data.player === "1") {
+        screenshotImage1.src = imageUrl;
+        document.getElementById('gameid').textContent = `GID: ${gamid}`;
+      } else if (data.player === "2") {
+        screenshotImage2.src = imageUrl;
+        document.getElementById('gameid').textContent = `GID: ${gamid}`;
+      }
+      document.getElementById('status').textContent = `Online`;
+      document.getElementById('status').style.color = "#19F775";
+      staticImageTimer = setTimeout(() => {
+        screenshotImage1.src = "DEFSCREEN";
+        screenshotImage2.src = "DEFSCREEN";
+        document.getElementById('status').textContent = "Offline";
+        document.getElementById('status').style.color = "red";
+      }, 5000);
+    }
+
+    websocket.onmessage = (event) => {
+      const jsonData = event.data;
+      displayImage(jsonData);
+      const now = Date.now();
+      const deltaTime = now - lastFrameTime;
+      fps = Math.round(1000 / deltaTime);
+      lastFrameTime = now;
+      clearTimeout(connectionLostTimer);
+      connectionLostTimer = setTimeout(() => {
+        screenshotImage1.src = "DEFSCREEN";
+        screenshotImage2.src = "DEFSCREEN";
+        document.getElementById('status').textContent = "Connection Lost";
+        document.getElementById('status').style.color = "orange";
+      }, 5000);
+    };
+
+    websocket.onclose = (event) => {
+      console.log(`WebSocket connection closed. Code: ${event.code}, Reason: ${event.reason}`);
+      screenshotImage1.src = "DEFSCREEN";
+      screenshotImage2.src = "DEFSCREEN";
+      document.getElementById('status').textContent = "Connection Lost";
+      document.getElementById('status').style.color = "orange";
+      clearTimeout(staticImageTimer);
+      clearTimeout(connectionLostTimer);
+      
+    };
+
+    websocket.onerror = (event) => {
+      console.error('WebSocket error:', event);
+    };
+
+    function updateFPSCounter() {
+      document.getElementById('fpsCounter').textContent = `FPS: ${fps}`;
+      requestAnimationFrame(updateFPSCounter);
+    }
+
+    updateFPSCounter();
+  </script>
+</body>
+</html>
