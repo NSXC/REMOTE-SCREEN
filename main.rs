@@ -3,6 +3,7 @@ use reqwest::blocking::Client;
 use serde_json::json;
 use std::collections::HashMap;
 use std::fs;
+use std::env;
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -12,6 +13,11 @@ use tungstenite::Message;
 use win_screenshot::prelude::*;
 use winapi::shared::windef::HWND;
 use winapi::um::winuser::FindWindowA;
+use std::io::Cursor;
+
+
+
+
 
 type PeerMap = Arc<Mutex<HashMap<u64, tungstenite::WebSocket<std::net::TcpStream>>>>;
 
@@ -51,14 +57,36 @@ pub fn create_broadcaster() -> Box<Broadcaster> {
         }
     });
 }
+//end broadcasting 
+
+fn parse_params(url: &str) -> std::collections::HashMap<String, String> {
+    let mut params = std::collections::HashMap::new();
+    let params_start = url.find("?");
+
+    if let Some(start_idx) = params_start {
+        let params_string = &url[start_idx + 1..];
+        for param in params_string.split("&") {
+            let parts: Vec<&str> = param.split("=").collect();
+            if parts.len() == 2 {
+                params.insert(parts[0].to_string(), parts[1].to_string());
+            }
+        }
+    }
+
+    params
+}
+
+fn authenticate(cookie: &str, userid: u64, gameid: u64) -> bool {
+    cookie == "admin" && userid == 123 && gameid == 123
+}
+
 
 fn set_broadcaster(broadcaster: Box<Broadcaster>) {
     unsafe {
         BROADCASTER = Some(broadcaster);
     }
 }
-
-fn capture_window_screenshot(hwnd: HWND) -> Result<RgbaImage, Box<dyn std::error::Error>> {
+fn capture_window_screenshot(hwnd: HWND) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let hwnd_isize = hwnd as isize;
     let using = Using::BitBlt;
     let area = Area::ClientOnly;
@@ -69,44 +97,80 @@ fn capture_window_screenshot(hwnd: HWND) -> Result<RgbaImage, Box<dyn std::error
     let image = RgbaImage::from_raw(buf.width, buf.height, buf.pixels)
         .ok_or("Failed to create RgbaImage from captured buffer")?;
 
-    Ok(image)
+    let mut image_data = Cursor::new(Vec::new());
+    image.write_to(&mut image_data, image::ImageFormat::Jpeg)?;
+
+    Ok(image_data.into_inner())
+}
+fn log_error_to_file(err_msg: &str) {
+    if let Err(err) = std::fs::write("error.log", err_msg) {
+        eprintln!("Error writing to error log: {:?}", err);
+    }
+}
+
+fn hide_console_window() {
+    unsafe { winapi::um::wincon::FreeConsole() };
 }
 
 fn main() {
-    let window_title = "WINDOWNAME";
-    let broadcaster = create_broadcaster();
-    set_broadcaster(broadcaster);
-    
-    loop {
-        let window_title_ansi = std::ffi::CString::new(window_title).expect("CString::new failed");
-        let hwnd = unsafe { FindWindowA(std::ptr::null_mut(), window_title_ansi.as_ptr()) };
-        if hwnd.is_null() {
-            println!("Window not found.");
-            break; 
-        }
+    hide_console_window();
+    let args: Vec<String> = env::args().collect();
+    if args.len() > 1 {
+        let params = parse_params(&args[1]);
+        if let (Some(cookie), Some(userid), Some(gameid)) = (
+            params.get("cookie"),
+            params.get("userid").and_then(|s| s.parse::<u64>().ok()),
+            params.get("gameid").and_then(|s| s.parse::<u64>().ok()),    //this is for custom protocals and I have it return the image along with json data to all the websockets!!!
+        ) {
+            if authenticate(cookie, userid, gameid) {
+                println!("Login successful!");
+                let window_title = "TARGET WINDOW";
+                let broadcaster = create_broadcaster();
+                set_broadcaster(broadcaster);
+                loop {
+                    let window_title_ansi = std::ffi::CString::new(window_title)
+                        .expect("CString::new failed");
+                    let hwnd = unsafe { FindWindowA(std::ptr::null_mut(), window_title_ansi.as_ptr()) };
+                    if hwnd.is_null() {
+                        println!("Window not found.");
+                        break;
+                    }
 
-        let img_result = capture_window_screenshot(hwnd);
+                    let img_result = capture_window_screenshot(hwnd);
 
-        match img_result {
-            Ok(img) => {
-                img.save("screenshot.jpg").expect("Error while saving screenshot");
-                let frame = fs::read("screenshot.jpg").expect("Error while reading screenshot file");
-                let frame_base64 = base64::encode(&frame);
-                let game_data = json!({
-                    "gamid": "101",
-                    "gameimage": frame_base64,
-                    "player": "1"
-                });
-                let json_data = serde_json::to_string(&game_data).expect("Error while converting to JSON");
+                    match img_result {
+                        Ok(img_data) => {
+                            let game_data = json!({
+                                "gamid": "101",
+                                "gameimage": base64::encode(&img_data),
+                                "player": "1"
+                            });
+                            let json_data = serde_json::to_string(&game_data)
+                                .unwrap_or_else(|json_err| {
+                                    let err_msg = format!("Error while converting to JSON: {:?}", json_err);
+                                    println!("{}", err_msg);
+                                    log_error_to_file(&err_msg);
+                                    String::new()
+                                });
 
-                if let Some(broadcaster) = unsafe { BROADCASTER.as_ref() } {
-                    broadcaster(json_data);
+                            if let Some(broadcaster) = unsafe { BROADCASTER.as_ref() } {
+                                broadcaster(json_data);
+                            }
+                        }
+                        Err(err) => {
+                            let err_msg = format!("Error capturing window screenshot: {:?}", err);
+                            println!("{}", err_msg);
+                            log_error_to_file(&err_msg);
+                        }
+                    }
                 }
+            } else {
+                println!("Login failed");
             }
-            Err(err) => {
-                println!("Error capturing window screenshot: {:?}", err);
-            }
+        } else {
+            println!("Missing parameter.");
         }
-
+    } else {
+        println!("No parameters provided.");
     }
 }
